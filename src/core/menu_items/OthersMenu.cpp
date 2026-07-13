@@ -7,6 +7,7 @@
 #include "modules/others/clicker.h"
 #include "modules/others/ibutton.h"
 #include "modules/others/mic.h"
+#include "modules/others/mp3_shuffle.h"
 #include "modules/others/qrcode_menu.h"
 #include "modules/others/tururururu.h"
 #include "modules/others/u2f.h"
@@ -19,6 +20,10 @@ void OthersMenu::optionsMenu() {
 
 #if defined(MIC_SPM1423) || defined(MIC_INMP441)
         {"Microphone",   [this]() { micMenu(); }      }, //@deveclipse
+#endif
+
+#if defined(HAS_NS4168_SPKR)
+        {"MP3 Shuffle",  mp3ShufflePlayerUI           },
 #endif
 
 // New consolidated BadUSB & HID submenu

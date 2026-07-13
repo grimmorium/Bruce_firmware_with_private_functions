@@ -23,7 +23,8 @@ static const float AUDIO_VOLUME_SCALE = 0.1f;
 static const float AUDIO_VOLUME_MAX = 100.0f;
 
 // Task configuration
-static const uint32_t AUDIO_TASK_STACK_SIZE = 16384; // 16KB - increased for complex MP3 files
+// static const uint32_t AUDIO_TASK_STACK_SIZE = 16384; // 16KB - increased for complex MP3 files
+static const uint32_t AUDIO_TASK_STACK_SIZE = 6144; // 6KB - decreased due to problems with memory allocation
 static const UBaseType_t AUDIO_TASK_PRIORITY = 1;
 static const BaseType_t AUDIO_TASK_CORE = 1; // Core 1
 
@@ -658,9 +659,7 @@ void playTone(unsigned int frequency, unsigned long duration, short waveType) {
     _setup_codec_speaker(true);
 
     if (frequency == 0 || duration == 0) {
-        if (frequency == 0 && duration > 0) {
-            delay(duration);
-        }
+        if (frequency == 0 && duration > 0) { delay(duration); }
         _setup_codec_speaker(false);
         return;
     }
