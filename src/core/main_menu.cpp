@@ -26,6 +26,9 @@ MainMenu::MainMenu() {
         &scriptsMenu,
 #endif
         &clockMenu,
+#if defined(HAS_NS4168_SPKR)
+        &mp3ShuffleMenu,
+#endif
         &othersMenu,
         &configMenu,
     };

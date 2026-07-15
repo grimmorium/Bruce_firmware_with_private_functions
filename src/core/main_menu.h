@@ -13,6 +13,7 @@
 #include "menu_items/GpsMenu.h"
 #include "menu_items/IRMenu.h"
 #include "menu_items/LoRaMenu.h"
+#include "menu_items/Mp3ShuffleMenu.h"
 #include "menu_items/NRF24.h"
 #include "menu_items/OthersMenu.h"
 #include "menu_items/RFIDMenu.h"
@@ -38,6 +39,9 @@ public:
 #if !defined(LITE_VERSION)
     LoRaMenu loraMenu;
     EthernetMenu ethernetMenu;
+#endif
+#if defined(HAS_NS4168_SPKR)
+    Mp3ShuffleMenu mp3ShuffleMenu;
 #endif
 
     MainMenu();

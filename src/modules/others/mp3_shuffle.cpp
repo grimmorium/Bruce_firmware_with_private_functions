@@ -87,33 +87,52 @@ static void mp3DrawHeader(int current, int total) {
     }
 }
 
-static void mp3DrawTrackInfo(const String &trackName, const String &status) {
-    int y = 30;
-    tft.fillRect(0, y, tftWidth, 40, bruceConfig.bgColor);
-
+static void mp3DrawTrackName(const String &text) {
+    int y = 24;
+    tft.fillRect(0, y, tftWidth, 20, bruceConfig.bgColor);
     tft.setTextColor(TFT_WHITE, bruceConfig.bgColor);
     tft.setTextSize(2);
+    tft.setCursor(6, y + 2);
+    tft.print(text);
+}
 
-    String display = trackName;
-    int maxChars = (tftWidth - 12) / 12; // textSize(2) ~ 12px per char
-    if (display.length() > (size_t)maxChars) { display = display.substring(0, maxChars - 3) + "..."; }
-
-    tft.setCursor(6, y + 4);
-    tft.print(display);
-
+static void mp3DrawStatus(const String &status) {
+    int y = 46;
+    tft.fillRect(0, y, tftWidth, 14, bruceConfig.bgColor);
     tft.setTextSize(1);
     tft.setTextColor(status == "[FAILED]" ? TFT_RED : TFT_LIGHTGREY, bruceConfig.bgColor);
-    tft.setCursor(6, y + 26);
+    tft.setCursor(6, y + 2);
     tft.print(status);
 }
 
+static void mp3DrawVolume(int vol) {
+    int y = 62;
+    tft.fillRect(0, y, tftWidth, 14, bruceConfig.bgColor);
+    tft.setTextSize(1);
+    tft.setTextColor(TFT_YELLOW, bruceConfig.bgColor);
+    tft.setCursor(6, y + 2);
+    tft.print("Vol: " + String(vol) + "%   (klawisz V)");
+}
+
 static void mp3DrawFooter() {
-    int y = tftHeight - 16;
-    tft.fillRect(0, y, tftWidth, 16, bruceConfig.bgColor);
+    int y = tftHeight - 28;
+    tft.fillRect(0, y, tftWidth, 28, bruceConfig.bgColor);
     tft.setTextColor(TFT_DARKGREY, bruceConfig.bgColor);
     tft.setTextSize(1);
-    tft.setCursor(6, y + 4);
-    tft.print("<Prev  OK:Pause  Next>  ESC:Stop");
+    tft.setCursor(6, y + 2);
+    tft.print("<Prev Next> OK:Pause V:Vol ESC:Stop");
+    tft.setCursor(6, y + 14);
+    tft.print("G0: kr=Next dl=Vol");
+}
+
+// Returns a sliding "window" of `text` that appears to scroll left, wrapping
+// around forever. If the text already fits within maxChars, returns it as-is.
+static String mp3ScrollWindow(const String &text, int maxChars, int offset) {
+    if ((int)text.length() <= maxChars) return text;
+    String padded = text + "   "; // gap before the text repeats
+    String doubled = padded + padded;
+    int start = offset % (int)padded.length();
+    return doubled.substring(start, start + maxChars);
 }
 
 // ===== MAIN ENTRY POINT =====
@@ -145,13 +164,26 @@ void mp3ShufflePlayerUI() {
     // instead of hammering the SD/SPI bus in a tight, delay-less loop.
     const int MAX_CONSECUTIVE_FAILURES = (int)tracks.size() + 2;
 
+    // Marquee scroll state for the currently displayed track name
+    String currentName = "";
+    int scrollOffset = 0;
+    unsigned long lastScrollTick = 0;
+    const int maxNameChars = (tftWidth - 12) / 12; // textSize(2) ~ 12px per char
+
     auto startTrack = [&](int p) {
         String path = tracks[order[p]];
         lastStartOk = playAudioFile(&SD, path, PLAYBACK_ASYNC);
         paused = false;
+
+        currentName = mp3ExtractName(path);
+        scrollOffset = 0;
+        lastScrollTick = millis();
+
         tft.fillScreen(bruceConfig.bgColor);
         mp3DrawHeader(p, (int)order.size());
-        mp3DrawTrackInfo(mp3ExtractName(path), lastStartOk ? "[PLAYING]" : "[FAILED]");
+        mp3DrawTrackName(mp3ScrollWindow(currentName, maxNameChars, scrollOffset));
+        mp3DrawStatus(lastStartOk ? "[PLAYING]" : "[FAILED]");
+        mp3DrawVolume(getAudioPlaybackInfo().volume);
         mp3DrawFooter();
 
         // Give the SD/SPI bus a moment to settle between file switches,
@@ -175,9 +207,11 @@ void mp3ShufflePlayerUI() {
 
         // Button checks ALWAYS run first, regardless of playback state,
         // so the user can exit/skip even if every track fails to play.
+        // ESC always fully stops playback and returns to the caller (menu).
         if (check(EscPress)) {
             stopAudioPlayback();
-            delay(50); // <--- Dodane: Czas dla FreeRTOS na zwolnienie taska
+            delay(50); // let FreeRTOS release the playback task's stack
+            returnToMenu = true;
             exitPlayer = true;
             break;
         }
@@ -205,29 +239,88 @@ void mp3ShufflePlayerUI() {
         if (check(SelPress)) {
             pauseAudioPlayback();
             paused = !paused;
-            mp3DrawTrackInfo(mp3ExtractName(tracks[order[pos]]), paused ? "[PAUSED]" : "[PLAYING]");
+            mp3DrawStatus(paused ? "[PAUSED]" : "[PLAYING]");
         }
 
-        // CYKLICZNA ZMIANA GŁOŚNOŚCI PRZYCISKIEM (0 -> 25 -> 50 -> 75 -> 100 -> 0)
-        if (check(UpPress)) {
-            AudioPlaybackInfo info = getAudioPlaybackInfo();
-            int vol = info.volume;
+        // BtnG0 (fizyczny przycisk na obudowie, GPIO0) - obsługiwany ręcznie:
+        // krótkie przyciśnięcie = następny utwór, długie = krok głośności.
+        // InputHandler() sam mapuje G0 na SelPress (patrz boards/.../interface.cpp),
+        // więc gdy G0 jest wciśnięty, wygaszamy SelPress żeby nie wywoływał
+        // dodatkowo pauzy/wznowienia.
+        {
+            static bool g0WasDown = false;
+            static unsigned long g0DownSince = 0;
+            static bool g0LongFired = false;
+            const unsigned long G0_LONG_PRESS_MS = 500;
 
-            // Dopasowanie do kolejnego progu lub wyzerowanie, jeśli jest na 100
-            if (vol < 25) vol = 25;
-            else if (vol < 50) vol = 50;
-            else if (vol < 75) vol = 75;
-            else if (vol < 100) vol = 100;
-            else vol = 0; // Kiedy osiągnie 100, wraca na 0
+            bool g0Down = (digitalRead(0) == LOW);
+            // if (g0Down) SelPress = false;
 
-            setAudioPlaybackVolume(vol);
+            if (g0Down && !g0WasDown) {
+                // Zbocze narastające - start odliczania czasu przytrzymania
+                g0DownSince = millis();
+                g0LongFired = false;
+            } else if (g0Down && g0WasDown && !g0LongFired && millis() - g0DownSince >= G0_LONG_PRESS_MS) {
+                // Przekroczono próg długiego przyciśnięcia - krok głośności
+                g0LongFired = true;
+                AudioPlaybackInfo info = getAudioPlaybackInfo();
+                int vol = info.volume;
+                if (vol < 25) vol = 25;
+                else if (vol < 50) vol = 50;
+                else if (vol < 75) vol = 75;
+                else if (vol < 100) vol = 100;
+                else vol = 0;
+                setAudioPlaybackVolume(vol);
+                mp3DrawVolume(vol);
+            } else if (!g0Down && g0WasDown && !g0LongFired) {
+                // Puszczono przed progiem długiego przyciśnięcia - następny utwór
+                g0WasDown = false;
+                stopAudioPlayback();
+                delay(50);
+                pos++;
+                if (pos >= (int)order.size()) {
+                    mp3ShuffleOrder(order);
+                    pos = 0;
+                }
+                startTrack(pos);
+                continue;
+            }
 
-            // Aktualizacja UI (tymczasowe pokazanie głośności)
-            mp3DrawTrackInfo(mp3ExtractName(tracks[order[pos]]), "[VOL: " + String(vol) + "%]");
+            g0WasDown = g0Down;
+        }
 
-            // Debouncing - zapobiega przeskoczeniu kilku poziomów przy jednym wciśnięciu
-            delay(150);
-            continue;
+        // ZMIANA GŁOŚNOŚCI KLAWISZEM "V" - czytamy KeyStroke.word BEZPOŚREDNIO
+        // (wypełniane już przez InputHandler() wywołane wyżej), zamiast przez
+        // checkLetterShortcutPress()/_getKeyPress(), które zawieszają task
+        // skanujący klawiaturę. To podejście nic nie kosztuje.
+        {
+            static bool volKeyHeld = false;
+            bool volKeyDown = false;
+            for (auto c : KeyStroke.word) {
+                if (c == 'v' || c == 'V') {
+                    volKeyDown = true;
+                    break;
+                }
+            }
+
+            if (volKeyDown && !volKeyHeld) {
+                // Zbocze narastające - jedno wciśnięcie = jeden krok cyklu
+                volKeyHeld = true;
+                AudioPlaybackInfo info = getAudioPlaybackInfo();
+                int vol = info.volume;
+
+                if (vol < 25) vol = 25;
+                else if (vol < 50) vol = 50;
+                else if (vol < 75) vol = 75;
+                else if (vol < 100) vol = 100;
+                else vol = 0;
+
+                setAudioPlaybackVolume(vol);
+                mp3DrawVolume(vol);
+                continue;
+            } else if (!volKeyDown) {
+                volKeyHeld = false;
+            }
         }
 
         if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
@@ -247,6 +340,14 @@ void mp3ShufflePlayerUI() {
             }
             startTrack(pos);
             continue;
+        }
+
+        // Scrolling filename marquee - only advances the window every 300ms,
+        // and only actually redraws when the name is longer than the visible area.
+        if ((int)currentName.length() > maxNameChars && millis() - lastScrollTick >= 300) {
+            lastScrollTick = millis();
+            scrollOffset++;
+            mp3DrawTrackName(mp3ScrollWindow(currentName, maxNameChars, scrollOffset));
         }
 
         delay(30);
